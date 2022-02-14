@@ -21,40 +21,27 @@
 # SOFTWARE.
 
 import threading
-import logging
-import pyttsx3
 import queue
+import pyaudio
+import urllib.request
+import urllib.parse
 
-from jarvis.core.console import ConsoleManager
 from jarvis.engines.tts import TTSEngine
-
-class TTSEnginePyTTSX3(TTSEngine):
+from jarvis.settings import REMOTE_TTS
+class TTSEngineRemote(TTSEngine):
     """
     Text To Speech Engine (TTS)
     """
 
     def __init__(self):
         super().__init__()
-        self.tts_engine = self._set_voice_engine()
         self.message_queue = queue.Queue(maxsize=9)  # Maxsize is the size of the queue / capacity of messages
         self.stop_speaking = False
-
-    @staticmethod
-    def _set_voice_engine():
-        """
-        Setup text to speech engine
-        :return: gtts engine object
-        """
-        tts_engine = pyttsx3.init()
-        tts_engine.setProperty('rate', 160)  # Setting up new voice rate
-        tts_engine.setProperty('volume', 1.0)  # Setting up volume level  between 0 and 1
-        return tts_engine
+        self.audio = pyaudio.PyAudio()
+        self.is_playing = False
 
     def run_engine(self):
-        try:
-            self.tts_engine.runAndWait()
-        except RuntimeError:
-            pass
+        pass
 
     def assistant_response(self, message, refresh_console=True):
         """
@@ -81,47 +68,31 @@ class TTSEnginePyTTSX3(TTSEngine):
         :param text: string (e.g 'tell me about google')
         """
         try:
-            while not self.message_queue.empty():
-
-                cumulative_batch = ''
+            while not self.message_queue.empty() and self.is_playing == False:
                 message = self.message_queue.get()
                 if message:
-                    batches = self._create_text_batches(raw_text=message)
-                    for batch in batches:
-                        self.tts_engine.say(batch)
-                        cumulative_batch += batch
-                        self.console_manager.console_output(cumulative_batch, refresh_console=refresh_console)
-                        self.run_engine()
-                        if self.stop_speaking:
-                            self.logger.debug('Speech interruption triggered')
-                            self.stop_speaking = False
-                            break
+                    self._say(message)
+                    self.console_manager.console_output(message, refresh_console=refresh_console)
+                    if self.stop_speaking:
+                        self.logger.debug('Speech interruption triggered')
+                        self.stop_speaking = False
+                        break
         except Exception as e:
             self.logger.error("Speech and console error message: {0}".format(e))
 
-    @staticmethod
-    def _create_text_batches(raw_text, number_of_words_per_batch=8):
-        """
-        Splits the user speech message into batches and return a list with the split batches
-        :param raw_text: string
-        :param number_of_words_per_batch: int
-        :return: list
-        """
-        raw_text = raw_text + ' '
-        list_of_batches = []
-        total_words = raw_text.count(' ')
-        letter_id = 0
+    def _say(self, text):
+        self.is_playing = True
+        text = urllib.parse.quote(text)
+        with urllib.request.urlopen('http://{}:{}/speech?text={}'.format(REMOTE_TTS['host'], REMOTE_TTS['port'], text)) as resp:
+            stream = self.audio.open(format = pyaudio.paInt16,
+                            channels = 1,
+                            rate = 22050,
+                            output = True)
+            while True:
+                data = resp.read(4096)
+                stream.write(data)
+                if not data:
+                    break
+            stream.close()
+        self.is_playing = False
 
-        for split in range(0, int(total_words / number_of_words_per_batch)):
-            batch = ''
-            words_count = 0
-            while words_count < number_of_words_per_batch:
-                batch += raw_text[letter_id]
-                if raw_text[letter_id] == ' ':
-                    words_count += 1
-                letter_id += 1
-            list_of_batches.append(batch)
-
-        if letter_id < len(raw_text):  # Add the rest of word in a batch
-            list_of_batches.append(raw_text[letter_id:])
-        return list_of_batches
